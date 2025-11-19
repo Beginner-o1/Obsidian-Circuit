@@ -189,4 +189,3 @@ Feel free to open issues or PRs. Small ways to help:
 
 ---
 
-Built for real-world triage — let me know what you want improved next (detailed diagrams, deployment scripts, CI integration, or a condensed README for GitHub display).
