@@ -1,51 +1,101 @@
 const express = require('express');
 const multer = require('multer');
-const pcapParser = require('pcap-parser');
-const fs = require('fs');
 const cors = require('cors');
+const fs = require('fs');
+const pcapParser = require('pcap-parser');
 
 const app = express();
-
-// Enable CORS for all routes
 app.use(cors());
+app.use(express.json());
 
-// Setup multer for file upload
 const upload = multer({ dest: 'uploads/' });
 
-// Define POST route for file upload and analysis
-app.post('/api/analyze-network', upload.single('file'), (req, res) => {
-  const pcapFile = req.file.path;  // The file path uploaded
-  const logs = [];
-  const suspiciousActivity = [];
+function toIPv4(buf, start) {
+  return `${buf[start]}.${buf[start + 1]}.${buf[start + 2]}.${buf[start + 3]}`;
+}
 
-  // Use fs.createReadStream instead of fs.readFileSync
-  const parser = pcapParser.parse(fs.createReadStream(pcapFile));
+function analyzePcap(filePath) {
+  return new Promise((resolve, reject) => {
+    const parser = pcapParser.parse(fs.createReadStream(filePath));
 
-  parser.on('packet', (packet) => {
-    logs.push(packet); // Store the packet data
-    // Example: Detect suspicious activity (e.g., suspicious IP address or ports)
-    if (packet.datalink && packet.datalink.includes('suspect')) {
-      suspiciousActivity.push({
-        type: 'Suspicious Packet',
-        details: 'Suspicious packet detected: ${packet}',
-      });
-    }
-  });
+    const logs = [];
+    const suspicious = [];
+    const fragments = {};
 
-  parser.on('end', () => {
-    res.json({
-      networkLogs: logs,
-      suspiciousActivity,
+    parser.on('packet', (packet) => {
+      const data = packet.data;
+      if (!data || data.length < 34) return;
+
+      try {
+        const etherType = data.readUInt16BE(12);
+        if (etherType !== 0x0800) return;
+
+        const ipStart = 14;
+        const verIhl = data[ipStart];
+        const ihl = (verIhl & 0x0f) * 4;
+
+        const identification = data.readUInt16BE(ipStart + 4);
+        const flagsOffset = data.readUInt16BE(ipStart + 6);
+        const moreFragments = (flagsOffset & 0x2000) !== 0;
+        const fragmentOffset = (flagsOffset & 0x1fff) * 8;
+
+        const srcIP = toIPv4(data, ipStart + 12);
+        const dstIP = toIPv4(data, ipStart + 16);
+        const protocol = data[ipStart + 9];
+
+        const logEntry = {
+          srcIP,
+          dstIP,
+          protocol,
+          moreFragments,
+          fragmentOffset
+        };
+
+        logs.push(logEntry);
+
+        if (!fragments[identification]) fragments[identification] = [];
+        if (moreFragments || fragmentOffset > 0) {
+          fragments[identification].push(fragmentOffset);
+        }
+
+        if (![1, 6, 17].includes(protocol)) {
+          suspicious.push({
+            type: "Unknown Protocol",
+            details: `Non-standard protocol ${protocol} from ${srcIP}`
+          });
+        }
+
+        if (fragmentOffset > 3000) {
+          suspicious.push({
+            type: "Large Fragment Offset",
+            details: `${srcIP} offset=${fragmentOffset}`
+          });
+        }
+
+      } catch {}
     });
-  });
 
-  parser.on('error', (err) => {
-    console.error('Error parsing PCAP file:', err);
-    res.status(500).json({ error: 'Error parsing PCAP file' });
+    parser.on('end', () => {
+      resolve({
+        networkLogs: logs,
+        suspiciousActivity: suspicious
+      });
+    });
+
+    parser.on('error', reject);
   });
+}
+
+app.post('/api/analyze-network', upload.single('file'), async (req, res) => {
+  try {
+    const filePath = req.file.path;
+    const result = await analyzePcap(filePath);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to analyze file" });
+  }
 });
 
-// Start the server
 app.listen(1000, () => {
-  console.log('Server running on http://localhost:1000');
+  console.log("Server running on :1000");
 });
