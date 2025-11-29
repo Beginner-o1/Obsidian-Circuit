@@ -13,6 +13,8 @@ const App = () => {
         <Route path="/app" element={<Dashboard />} />
         <Route path="/history" exact element={<History />} />
         <Route path="/form" exact element={<Form />} /> 
+        <Route path="/" element={<Login />} />
+        <Route path="/dashboard" element={<Dashboard />} />
       </Routes>
     </Router>
   );
